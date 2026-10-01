@@ -18,7 +18,7 @@ O Pfitscher Coin Protocol (PCP) define a comunicacao entre um orquestrador e um 
 trabalhadores. O orquestrador publica uma serie numerica e um premio; cada trabalhador estima o
 proximo valor e responde; o orquestrador elege como vencedor quem respondeu primeiro o valor
 escolhido pela maioria e o premia em Pfitscher Coins. O PCP opera sobre TCP, protegido por
-TLS 1.3, com mensagens JSON separadas por quebra de linha.
+TCP, com mensagens JSON separadas por quebra de linha, opcionalmente protegidas por TLS 1.3.
 
 ## Sumario
 
@@ -32,6 +32,7 @@ TLS 1.3, com mensagens JSON separadas por quebra de linha.
 8. Consideracoes de Desempenho
 9. Referencias
 Apendice A. Exemplo de Rodada
+Apendice B. Mapeamento para HTTP e MQTT
 
 ---
 
@@ -62,8 +63,8 @@ As palavras "DEVE", "NAO DEVE", "DEVERIA" e "PODE" seguem a RFC 2119.
 O PCP DEVE usar TCP. A porta padrao e 12000. Cada trabalhador mantem uma unica conexao com o
 orquestrador durante toda a sessao.
 
-A conexao DEVERIA ser protegida por TLS 1.3. O trabalhador DEVE validar o certificado do
-orquestrador com a autoridade certificadora configurada.
+Na forma basica, as mensagens trafegam sem cifragem. A conexao PODE ser protegida por TLS 1.3; nesse
+caso o trabalhador DEVE validar o certificado do orquestrador com a autoridade certificadora configurada.
 
 Cada mensagem DEVE ser um objeto JSON (RFC 8259) em uma unica linha, terminado pelo caractere LF
 (0x0A). O receptor DEVE acumular os bytes recebidos ate encontrar um LF.
@@ -74,16 +75,19 @@ Cada mensagem DEVE ser um objeto JSON (RFC 8259) em uma unica linha, terminado p
 +--------------------------------------------+------+
 ```
 
+A escolha do TCP resultou da avaliacao da secao 8, na qual as mesmas mensagens foram transportadas
+tambem sobre HTTP e MQTT (Apendice B). O registro sempre ocorre pela conexao TCP.
+
 ## 4. Mensagens
 
 Toda mensagem DEVE ter o campo `tipo`.
 
 | Tipo      | Sentido    | Campos                                                                   |
 |-----------|------------|--------------------------------------------------------------------------|
-| REGISTRO  | T -> O     | `nome` (texto), `senha` (texto), `perfil` (texto)                        |
+| REGISTRO  | T -> O     | `nome` (texto), `senha` (texto), `perfil` (texto), `porta_http` (inteiro) |
 | REGISTRO  | O -> T     | `aceito` (booleano)                                                      |
-| TAREFA    | O -> todos | `tarefa` (inteiro), `serie` (lista de numeros), `premio` (numero)        |
-| RESPOSTA  | T -> O     | `tarefa` (inteiro), `valor` (numero), `tempo_llm` (numero, ms)           |
+| TAREFA    | O -> todos | `protocolo` (texto), `tarefa` (inteiro), `serie` (lista de numeros), `premio` (numero) |
+| RESPOSTA  | T -> O     | `nome` (texto), `tarefa` (inteiro), `valor` (numero), `tempo_llm` (numero, ms) |
 | RESULTADO | O -> todos | `tarefa` (inteiro), `vencedor` (texto ou null), `valor` (numero ou null), `premio` (numero), `votos` (objeto valor -> quantidade) |
 
 (O = orquestrador, T = trabalhador)
@@ -91,7 +95,7 @@ Toda mensagem DEVE ter o campo `tipo`.
 ## 5. Procedimentos
 
 ### 5.1 Registro
-1. O trabalhador abre a conexao TCP e faz o handshake TLS.
+1. O trabalhador abre a conexao TCP (e faz o handshake TLS, se usado).
 2. O trabalhador DEVE enviar REGISTRO como primeira mensagem.
 3. O orquestrador DEVE responder REGISTRO com `aceito` falso, e fechar a conexao, se a senha for
    invalida, se o nome for vazio ou se o nome ja estiver em uso.
@@ -122,35 +126,47 @@ O fechamento da conexao TCP indica a saida do trabalhador, que e removido da lis
 
 ## 7. Consideracoes de Seguranca
 
-- TLS 1.3 garante confidencialidade e integridade das mensagens, incluindo a senha.
-- A validacao do certificado impede que um servidor falso se passe pelo orquestrador.
-- A senha impede a entrada de trabalhadores nao autorizados.
-- A resposta e ligada a conexao, e nao ao conteudo da mensagem, o que impede responder em nome
-  de outro trabalhador.
+- Sem TLS, o PCP nao oferece confidencialidade nem integridade: senha, tarefas e respostas trafegam em
+  texto puro e podem ser lidas ou alteradas por quem tiver acesso a rede. O mesmo vale para HTTP e
+  MQTT em sua forma basica.
+- Com TLS 1.3, as mensagens sao cifradas e autenticadas, e a validacao do certificado impede que um
+  servidor falso se passe pelo orquestrador.
+- A senha impede a entrada de trabalhadores nao autorizados (em texto puro sem TLS).
+- A resposta e ligada a conexao, e nao ao conteudo da mensagem, o que impede responder em nome de
+  outro trabalhador. No mapeamento MQTT (Apendice B) essa garantia nao existe: a identidade vem do
+  campo `nome` e qualquer cliente do broker pode publicar no topico de respostas.
 - O prazo de registro limita ataques de negacao de servico com conexoes ociosas.
 - A ordem de chegada e definida pelo orquestrador.
 - Limitacoes: trabalhadores combinados podem forjar uma maioria; a senha e compartilhada.
 
 ## 8. Consideracoes de Desempenho
 
-| Protocolo | Bytes extras por mensagem | Intermediario | Servidor envia sem ser chamado |
-|-----------|---------------------------|---------------|--------------------------------|
-| TCP (PCP) | 1                         | nao           | sim                            |
-| WebSocket | 2 a 14                    | nao           | sim                            |
-| MQTT      | 2 + nome do topico        | broker        | sim                            |
-| HTTP/1.1  | ~150 a 400                | nao           | nao                            |
+As mesmas tarefas, com os mesmos tres trabalhadores, foram executadas sobre TCP, HTTP e MQTT. Para cada
+resposta mediu-se o tempo de rede: o tempo entre o envio da TAREFA e a chegada da RESPOSTA, menos o
+tempo de processamento informado pelo trabalhador. As conexoes foram abertas antes das medicoes.
 
-Medicoes (127.0.0.1, 3 trabalhadores, 20 rodadas, LLM simulado):
+| Protocolo | Bytes extras por mensagem | Intermediario | Cifragem com TLS     |
+|-----------|---------------------------|---------------|----------------------|
+| TCP (PCP) | 1                         | nao           | ponta a ponta        |
+| HTTP/1.1  | ~150 a 400 (cabecalhos)   | nao           | ponta a ponta        |
+| MQTT      | 2 a 4 + nome do topico    | broker        | apenas ate o broker  |
 
-| Medida                       | Com TLS   | Sem TLS |
-|------------------------------|-----------|---------|
-| Tempo para conectar          | ~11-15 ms | ~2 ms   |
-| Tempo de rede medio          | 1,97 ms   | 1,49 ms |
-| Tempo total medio da rodada  | 9,2 ms    | 7,9 ms  |
-| Tamanho da RESPOSTA          | ~85 bytes | ~85 bytes |
+Tempo de rede medio por resposta (localhost, 3 trabalhadores, 60 respostas por protocolo, faixa de
+tres execucoes):
 
-O principal custo do TLS e o handshake, feito uma vez por conexao. Cada registro TLS 1.3
-acrescenta 22 bytes (5 de cabecalho, 1 de tipo e 16 de autenticacao).
+| Protocolo | Cru (sem TLS) | Com TLS 1.3   |
+|-----------|---------------|---------------|
+| TCP       | 1,9 - 2,4 ms  | 2,6 - 2,8 ms  |
+| HTTP      | 7,3 - 9,6 ms  | 6,0 - 8,8 ms  |
+| MQTT      | 4,4 - 5,7 ms  | 6,2 - 7,0 ms  |
+
+Na forma crua, nenhum dos tres protocolos cifra os dados. Criterio de escolha: e eliminado o protocolo
+que expoe as mensagens a um terceiro (o MQTT, cujo broker recebe todo o trafego e aceita publicacoes
+de qualquer cliente); entre os restantes, prevalece a menor latencia. O TCP apresentou a menor
+latencia e o menor overhead, e foi adotado como transporte do PCP. A cifragem, quando necessaria, e
+obtida com TLS sobre o TCP.
+
+Cada registro TLS 1.3 acrescenta 22 bytes (5 de cabecalho, 1 de tipo e 16 de autenticacao).
 
 ## 9. Referencias
 
@@ -165,9 +181,20 @@ acrescenta 22 bytes (5 de cabecalho, 1 de tipo e 16 de autenticacao).
 ## Apendice A. Exemplo de Rodada
 
 ```
-T->O {"tipo": "REGISTRO", "nome": "t1", "senha": "...", "perfil": "analitico"}
+T->O {"tipo": "REGISTRO", "nome": "t1", "senha": "...", "perfil": "analitico", "porta_http": 52011}
 O->T {"tipo": "REGISTRO", "aceito": true}
-O->T {"tipo": "TAREFA", "tarefa": 1, "serie": [2, 6, 18, 54, 162, 486], "premio": 10}
-T->O {"tipo": "RESPOSTA", "tarefa": 1, "valor": 1458.0, "tempo_llm": 312.5}
+O->T {"tipo": "TAREFA", "protocolo": "sockets", "tarefa": 1, "serie": [2, 6, 18, 54, 162, 486], "premio": 10}
+T->O {"tipo": "RESPOSTA", "nome": "t1", "tarefa": 1, "valor": 1458.0, "tempo_llm": 312.5}
 O->T {"tipo": "RESULTADO", "tarefa": 1, "vencedor": "t1", "valor": 1458, "premio": 10, "votos": {"1458": 2, "57": 1}}
 ```
+
+## Apendice B. Mapeamento para HTTP e MQTT (usado na avaliacao)
+
+HTTP: cada trabalhador mantem um servidor HTTP(S) na porta informada em `porta_http`. O orquestrador
+envia TAREFA e RESULTADO no corpo de um `POST /` (application/json). A RESPOSTA volta no corpo da
+resposta HTTP 200 da TAREFA.
+
+MQTT: orquestrador e trabalhadores se conectam a um broker (porta 1884 sem TLS, 8883 com TLS). O
+orquestrador publica TAREFA e RESULTADO no topico `pfitscher/tarefas`; os trabalhadores publicam
+RESPOSTA no topico `pfitscher/respostas`, identificando-se pelo campo `nome`.
+

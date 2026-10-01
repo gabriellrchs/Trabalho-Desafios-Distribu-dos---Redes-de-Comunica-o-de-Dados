@@ -1,5 +1,8 @@
+import http.client
 import json
 import ssl
+
+import paho.mqtt.client as mqtt
 
 import config
 
@@ -52,3 +55,25 @@ def tls_cliente(sock):
     contexto = ssl.create_default_context(cafile=config.CERTIFICADO_CA)
     contexto.minimum_version = ssl.TLSVersion.TLSv1_3
     return contexto.wrap_socket(sock, server_hostname="localhost")
+
+
+def conexao_http(ip, porta):
+    """Abre uma conexao HTTP (ou HTTPS) com o servidor HTTP de um trabalhador."""
+    if not config.USAR_TLS:
+        return http.client.HTTPConnection(ip, porta, timeout=config.TEMPO_LIMITE)
+    contexto = ssl.create_default_context(cafile=config.CERTIFICADO_CA)
+    contexto.minimum_version = ssl.TLSVersion.TLSv1_3
+    # o certificado e conferido pela CA, mas nao pelo nome, porque cada trabalhador tem um IP diferente
+    contexto.check_hostname = False
+    return http.client.HTTPSConnection(ip, porta, timeout=config.TEMPO_LIMITE, context=contexto)
+
+
+def cliente_mqtt(nome):
+    """Cria um cliente MQTT ja conectado ao broker."""
+    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=nome)
+    porta = config.MQTT_PORTA
+    if config.USAR_TLS:
+        cliente.tls_set(ca_certs=config.CERTIFICADO_CA)
+        porta = config.MQTT_PORTA_TLS
+    cliente.connect(config.MQTT_HOST, porta)
+    return cliente

@@ -1,54 +1,67 @@
 # Pfitscher Coin
 
-Sistema distribuído com sockets TCP. Um **orquestrador** envia uma série de números para vários
-**trabalhadores**. Cada trabalhador pergunta a um LLM qual é o próximo número e responde. Vence quem
-respondeu primeiro a resposta que a maioria deu, e o vencedor ganha Pfitscher Coins.
+Sistema distribuído para comparar protocolos de comunicação. Um **orquestrador** envia uma série de
+números para três **trabalhadores**. Cada um pergunta a um LLM qual é o próximo número, com um prompt
+diferente, e responde. Vence quem respondeu primeiro a resposta que a maioria deu, e o vencedor
+ganha Pfitscher Coins.
 
-- Comunicação: sockets TCP (`socket`)
-- Segurança: TLS 1.3 (`ssl`)
+As **mesmas tarefas** são executadas em três protocolos: **Sockets TCP**, **HTTP** e **MQTT**. No
+final, o orquestrador compara a latência e a segurança de cada um e indica o melhor.
+
+- Por padrão os protocolos rodam **crus** (sem criptografia). Com `USAR_TLS = True` rodam com TLS 1.3
+  (Sockets + TLS, HTTPS e MQTT + TLS), para medir o custo da cifragem.
 - LLM: Groq, modelo `openai/gpt-oss-20b` (plano gratuito)
 
 ## Arquivos
 
 | Arquivo | Conteúdo |
 |---|---|
-| `config.py` | configurações (porta, senha, prêmio, prazo, TLS, LLM) |
-| `rede.py` | classe `Conexao` (envia e recebe mensagens) e funções que ligam o TLS |
-| `orquestrador.py` | classe `Orquestrador` (servidor) |
-| `trabalhador.py` | classe `Trabalhador` (cliente) |
+| `config.py` | configurações (portas, protocolos, senha, prêmio, prazo, TLS, LLM) |
+| `rede.py` | envio/recebimento por socket, TLS, conexão HTTP e cliente MQTT |
+| `orquestrador.py` | classe `Orquestrador`: roda as tarefas nos 3 protocolos e compara |
+| `trabalhador.py` | classe `Trabalhador`: atende pelos 3 protocolos ao mesmo tempo |
 | `llm.py` | pergunta ao LLM o próximo número |
+| `mosquitto.conf` | configuração do broker MQTT |
 | `teste_dos.py` | teste de DoS (abre várias conexões sem enviar nada) |
-| `.env.exemplo` | modelo do `.env`, onde fica a chave da API do Groq (o `.env` não vai para o GitHub) |
-| `certificados/` | certificados do TLS |
+| `.env.exemplo` | modelo do `.env`, onde fica a chave do Groq (o `.env` não vai para o GitHub) |
+| `certificados/` | certificados do TLS (usados só com `USAR_TLS = True`) |
 | `dados/` | criada ao rodar: `carteira.json` (saldos) e `medicoes.csv` (tempos) |
 | `docs/` | explicação do projeto e RFC do protocolo |
 
 ## Como rodar
 
-1. Instalar a biblioteca do LLM:
+1. Instalar as bibliotecas:
    ```
-   pip install groq
+   pip install -r requirements.txt
    ```
-2. Copiar o arquivo `.env.exemplo` para `.env` e colocar a chave do Groq nele:
+2. Instalar o broker MQTT **Mosquitto**: https://mosquitto.org/download (instalador Windows 64-bit).
+3. Copiar `.env.exemplo` para `.env` e colocar a chave do Groq:
    ```
    GROQ_API_KEY=sua-chave
    ```
-   Para criar uma chave gratuita: https://console.groq.com → **API Keys → Create API Key**.
-3. Abrir 4 terminais na pasta do projeto, um comando em cada:
+   Chave gratuita em https://console.groq.com → **API Keys → Create API Key**.
+4. Abrir 5 terminais na pasta do projeto, um comando em cada, nesta ordem:
    ```
+   & "C:\Program Files\mosquitto\mosquitto.exe" -c mosquitto.conf -v
    python orquestrador.py
    python trabalhador.py t1 analitico
    python trabalhador.py t2 apressado
    python trabalhador.py t3 chutador
    ```
 
-O orquestrador espera 3 trabalhadores, roda 5 rodadas e mostra o ranking e os tempos medidos.
+O orquestrador espera os 3 trabalhadores e executa 5 tarefas em cada protocolo (15 rodadas, cerca de
+2 minutos). No final mostra o ranking, a comparação dos protocolos e o protocolo escolhido. As medições
+ficam em `dados/medicoes.csv`.
 
-Para testar sem internet ou sem chave: `USAR_LLM = False` em `config.py`.
+Opções em `config.py`:
+- `USAR_TLS = True`: liga o TLS nos três protocolos, para medir o custo da cifragem;
+- `USAR_LLM = False`: respostas simuladas, sem internet e sem chave;
+- `PROTOCOLOS = ["sockets", "http"]`: roda sem MQTT, sem precisar do Mosquitto.
 
 ### Em computadores diferentes
-Na máquina do orquestrador, descubra o IP com `ipconfig`. Nas outras máquinas, passe esse IP no final:
-`python trabalhador.py t1 analitico 192.168.0.10`. A pasta `certificados/` precisa estar em todas.
+Na máquina do orquestrador (e do Mosquitto), descubra o IP com `ipconfig`. Nas outras, passe esse IP
+no final do comando: `python trabalhador.py t1 analitico 192.168.0.10`. Ajuste também `MQTT_HOST`
+em `config.py`. A pasta `certificados/` precisa estar em todas as máquinas.
 
 ### Teste de DoS
 Com o orquestrador rodando: `python teste_dos.py`
